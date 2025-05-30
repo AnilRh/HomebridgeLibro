@@ -4,7 +4,7 @@
   "displayName": "PetLibro Smart Feeder",
   "description": "Homebridge plugin for PetLibro smart feeders. Control your pet feeder through Apple HomeKit.",
   "main": "index.js",
-  "author": "Your Name <your.email@example.com>",
+  "author": "Praveen Sharma <provalone@mac.com>",
   "license": "MIT",
   "homepage": "https://github.com/yourusername/homebridge-petlibro#readme",
   "repository": {
@@ -37,10 +37,6 @@
   ],
   "dependencies": {
     "axios": "^1.6.0"
-  },
-  "funding": {
-    "type": "paypal",
-    "url": "https://paypal.me/yourusername"
   },
   "scripts": {
     "test": "echo \"No tests specified\" && exit 0",
