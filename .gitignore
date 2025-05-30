@@ -1,1 +1,22 @@
-/sync.sh
+# Local development files
+sync.sh
+deploy.sh
+*.local
+
+# Environment files
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Node modules (if you ever add them)
+node_modules/
+
+# Logs
+*.log
