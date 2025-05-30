@@ -1,27 +1,103 @@
 {
   "name": "homebridge-petlibro",
   "version": "1.0.0",
-  "description": "Homebridge plugin for PetLibro smart feeders",
+  "displayName": "PetLibro Smart Feeder",
+  "description": "Homebridge plugin for PetLibro smart feeders. Control your pet feeder through Apple HomeKit.",
   "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "echo \"No build needed\"",
-    "prepublishOnly": "echo \"No build needed\""
+  "author": "Your Name <your.email@example.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/yourusername/homebridge-petlibro#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yourusername/homebridge-petlibro.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/homebridge-petlibro/issues"
   },
   "keywords": [
     "homebridge-plugin",
+    "homebridge",
+    "homekit",
     "petlibro",
+    "pet-feeder",
     "smart-feeder",
     "pet",
-    "homekit"
+    "feeder",
+    "automation",
+    "iot"
   ],
-  "author": "Your Name",
-  "license": "MIT",
   "engines": {
     "node": ">=14.18.1",
     "homebridge": ">=1.3.0"
   },
+  "files": [
+    "index.js",
+    "README.md",
+    "LICENSE"
+  ],
   "dependencies": {
     "axios": "^1.6.0"
+  },
+  "funding": {
+    "type": "paypal",
+    "url": "https://paypal.me/yourusername"
+  },
+  "scripts": {
+    "test": "echo \"No tests specified\" && exit 0",
+    "lint": "echo \"No linting configured\" && exit 0"
+  },
+  "homebridge": {
+    "displayName": "PetLibro Smart Feeder",
+    "platformName": "PetLibroPlatform",
+    "configSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string",
+          "default": "Pet Feeder",
+          "description": "Display name for your pet feeder"
+        },
+        "email": {
+          "title": "Email",
+          "type": "string",
+          "format": "email",
+          "required": true,
+          "description": "Your PetLibro account email address"
+        },
+        "password": {
+          "title": "Password",
+          "type": "string",
+          "required": true,
+          "description": "Your PetLibro account password"
+        },
+        "portions": {
+          "title": "Portions",
+          "type": "integer",
+          "default": 1,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Number of portions to dispense per feeding (1-10)"
+        },
+        "timezone": {
+          "title": "Timezone",
+          "type": "string",
+          "default": "America/New_York",
+          "description": "Your timezone (e.g., America/New_York, Europe/London)"
+        },
+        "country": {
+          "title": "Country",
+          "type": "string",
+          "default": "US",
+          "description": "Your country code (e.g., US, CA, UK)"
+        },
+        "deviceId": {
+          "title": "Device ID (Optional)",
+          "type": "string",
+          "description": "Specific device ID if you have multiple feeders (auto-detected if not provided)"
+        }
+      },
+      "required": ["email", "password"]
+    }
   }
 }
