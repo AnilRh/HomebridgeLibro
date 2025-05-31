@@ -104,10 +104,7 @@
           "description": "Specific device ID if you have multiple feeders (auto-detected if not provided)"
         }
       },
-      "required": [
-        "email",
-        "password"
-      ]
+	  "required": ["email", "password"]
     }
   }
 }
