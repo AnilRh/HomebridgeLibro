@@ -1,6 +1,6 @@
-# "Unofficial plugin, not affiliated with PetLibro"
-# "Use at your own risk"
-# "Check PetLibro's ToS before use"
+// Unofficial plugin, not affiliated with PetLibro
+// Use at your own risk
+// Check PetLibro's ToS before use
 
 const axios = require('axios');
 const crypto = require('crypto');
