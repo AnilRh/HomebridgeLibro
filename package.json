@@ -1,6 +1,6 @@
 {
   "name": "homebridge-petlibro",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "PetLibro Smart Feeder",
   "description": "Homebridge plugin for PetLibro smart feeders. Control your pet feeder through Apple HomeKit.",
   "main": "index.js",
@@ -15,27 +15,27 @@
     "url": "https://github.com/yourusername/homebridge-petlibro/issues"
   },
   "keywords": [
-	  "homebridge-plugin",
-      "homebridge",
-      "homekit",
-      "petlibro",
-      "pet-libro",
-      "PETLIBRO",
-      "pet libro",
-      "pet-feeder",
-      "smart-feeder",
-      "automatic-feeder",
-      "pet",
-      "feeder",
-      "cat-feeder",
-      "dog-feeder",
-      "automation",
-      "iot",
-      "smart-pet",
-      "granary",
-      "PLAF103",
-      "PLAF107",
-      "PLAF108"
+    "homebridge-plugin",
+    "homebridge",
+    "homekit",
+    "petlibro",
+    "pet-libro",
+    "PETLIBRO",
+    "pet libro",
+    "pet-feeder",
+    "smart-feeder",
+    "automatic-feeder",
+    "pet",
+    "feeder",
+    "cat-feeder",
+    "dog-feeder",
+    "automation",
+    "iot",
+    "smart-pet",
+    "granary",
+    "PLAF103",
+    "PLAF107",
+    "PLAF108"
   ],
   "engines": {
     "node": ">=14.18.1",
@@ -104,7 +104,10 @@
           "description": "Specific device ID if you have multiple feeders (auto-detected if not provided)"
         }
       },
-      "required": ["email", "password"]
+      "required": [
+        "email",
+        "password"
+      ]
     }
   }
 }
