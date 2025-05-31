@@ -6,13 +6,13 @@
   "main": "index.js",
   "author": "Praveen Sharma <97845+praveensharma@users.noreply.github.com>",
   "license": "MIT",
-  "homepage": "https://github.com/yourusername/homebridge-petlibro#readme",
+  "homepage": "https://github.com/praveensharma/HomebridgeLibro#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yourusername/homebridge-petlibro.git"
+    "url": "git+https://github.com/praveensharma/HomebridgeLibro.git"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/homebridge-petlibro/issues"
+    "url": "https://github.com/praveensharma/HomebridgeLibro/issues"
   },
   "keywords": [
     "homebridge-plugin",
