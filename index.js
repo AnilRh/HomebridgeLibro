@@ -430,9 +430,9 @@ class PetLibroFeeder {
       
       const requestId = this.generateRequestId();
       
-      const response = await axios.post(`${this.baseUrl}/device/device/setRotateFoodBowl`, {
+      const response = await axios.post(`${this.baseUrl}/device/wetFeedingPlan/platePositionChange`, {
         deviceSn: this.deviceId,
-        requestId: requestId
+        plate: 1  // The plate ID doesn't matter - device rotates one bowl counter-clockwise
       }, {
         headers: {
           'Authorization': `Bearer ${this.accessToken}`,
@@ -492,9 +492,8 @@ class PetLibroFeeder {
       
       const requestId = this.generateRequestId();
       
-      const response = await axios.post(`${this.baseUrl}/device/device/setFeedAudio`, {
-        deviceSn: this.deviceId,
-        requestId: requestId
+      const response = await axios.post(`${this.baseUrl}/device/wetFeedingPlan/feedAudio`, {
+        deviceSn: this.deviceId
       }, {
         headers: {
           'Authorization': `Bearer ${this.accessToken}`,
@@ -542,9 +541,9 @@ class PetLibroFeeder {
         // Start manual feeding (open door)
         this.log('📡 Sending manual feed start command to Polar feeder');
         
-        const response = await axios.post(`${this.baseUrl}/device/device/setManualFeedNow`, {
+        const response = await axios.post(`${this.baseUrl}/device/wetFeedingPlan/manualFeedNow`, {
           deviceSn: this.deviceId,
-          requestId: requestId
+          plate: 1  // The plate ID doesn't matter - device feeds from current bowl
         }, {
           headers: {
             'Authorization': `Bearer ${this.accessToken}`,
@@ -576,10 +575,9 @@ class PetLibroFeeder {
         
         this.log('📡 Sending manual feed stop command to Polar feeder');
         
-        const response = await axios.post(`${this.baseUrl}/device/device/setStopFeedNow`, {
+        const response = await axios.post(`${this.baseUrl}/device/wetFeedingPlan/stopFeedNow`, {
           deviceSn: this.deviceId,
-          manualFeedId: this.manualFeedId,
-          requestId: requestId
+          feedId: this.manualFeedId
         }, {
           headers: {
             'Authorization': `Bearer ${this.accessToken}`,
