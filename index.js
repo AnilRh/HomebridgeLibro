@@ -313,10 +313,10 @@ class PetLibroFeeder {
           
           // Look for device ID in different possible fields
           this.deviceId = device.deviceSn || device.device_id || device.deviceId || device.id || device.serial;
-          const deviceName = device.deviceName || device.device_name || device.name || 'Unknown Device';
+          const deviceName = device.deviceName || device.device_name || device.name || device.productName || 'Unknown Device';
           
           // Detect device model and type
-          this.deviceModel = device.deviceModel || device.model || device.type || 'Unknown';
+          this.deviceModel = device.productIdentifier || 'Unknown';
           this.isPolarFeeder = this.deviceModel === 'PLAF109' || deviceName.toLowerCase().includes('polar');
           
           if (this.isPolarFeeder) {
