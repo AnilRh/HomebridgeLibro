@@ -129,7 +129,7 @@ class PetLibroFeeder {
     this.switchService = this.accessory.getService(this.platform.api.hap.Service.Switch) 
       || this.accessory.addService(this.platform.api.hap.Service.Switch);
     
-    this.switchService.setCharacteristic(this.platform.api.hap.Characteristic.Name, 'Door Control');
+    this.switchService.setCharacteristic(this.platform.api.hap.Characteristic.Name, `${this.name} Door`);
     
     this.switchService.getCharacteristic(this.platform.api.hap.Characteristic.On)
       .onGet(this.getPolarDoorState.bind(this))
@@ -139,7 +139,7 @@ class PetLibroFeeder {
     this.rotateTrayService = this.accessory.getService('Rotate Tray') 
       || this.accessory.addService(this.platform.api.hap.Service.Switch, 'Rotate Tray', 'rotate-tray');
     
-    this.rotateTrayService.setCharacteristic(this.platform.api.hap.Characteristic.Name, `Rotate Tray (Current: ${this.currentTrayPosition + 1})`);
+    this.rotateTrayService.setCharacteristic(this.platform.api.hap.Characteristic.Name, `${this.name} Rotate Tray (Current: ${this.currentTrayPosition + 1})`);
     
     this.rotateTrayService.getCharacteristic(this.platform.api.hap.Characteristic.On)
       .onGet(() => false) // Always return false for momentary switch
@@ -149,7 +149,7 @@ class PetLibroFeeder {
     this.audioService = this.accessory.getService('Play Audio') 
       || this.accessory.addService(this.platform.api.hap.Service.Switch, 'Play Audio', 'play-audio');
     
-    this.audioService.setCharacteristic(this.platform.api.hap.Characteristic.Name, 'Play Audio');
+    this.audioService.setCharacteristic(this.platform.api.hap.Characteristic.Name, `${this.name} Audio`);
     
     this.audioService.getCharacteristic(this.platform.api.hap.Characteristic.On)
       .onGet(() => false) // Always return false for momentary switch
@@ -223,10 +223,8 @@ class PetLibroFeeder {
           this.log('Authentication successful!');
           this.log('Token (first 20 chars):', this.accessToken.substring(0, 20) + '...');
           
-          // Get device list if deviceId not specified
-          if (!this.deviceId) {
-            await this.getDevices();
-          }
+          // Always get device list for model detection
+          await this.getDevices();
           return; // Success!
         } else {
           this.log('⚠️ Success response but no token found in data.token');
@@ -309,28 +307,52 @@ class PetLibroFeeder {
         const devices = response.data.data;
         
         if (Array.isArray(devices) && devices.length > 0) {
-          const device = devices[0];
+          // Find the target device
+          let targetDevice = null;
           
-          // Look for device ID in different possible fields
-          this.deviceId = device.deviceSn || device.device_id || device.deviceId || device.id || device.serial;
-          const deviceName = device.deviceName || device.device_name || device.name || device.productName || 'Unknown Device';
-          
-          // Detect device model and type
-          this.deviceModel = device.productIdentifier || 'Unknown';
-          this.isPolarFeeder = this.deviceModel === 'PLAF109' || deviceName.toLowerCase().includes('polar');
-          
-          if (this.isPolarFeeder) {
-            this.log(`🐧 Detected Polar Wet Food Feeder (${this.deviceModel})`);
-            // Update accessory model info
-            this.accessory.getService(this.platform.api.hap.Service.AccessoryInformation)
-              .setCharacteristic(this.platform.api.hap.Characteristic.Model, 'Polar Wet Food Feeder');
+          if (this.deviceId) {
+            // If deviceId is configured, find the matching device
+            targetDevice = devices.find(device => {
+              const deviceSn = device.deviceSn || device.device_id || device.deviceId || device.id || device.serial;
+              return deviceSn === this.deviceId;
+            });
+            
+            if (!targetDevice) {
+              this.log(`⚠️ Configured deviceId '${this.deviceId}' not found in device list`);
+              this.log(`📋 Available devices:`, devices.map(d => ({
+                id: d.deviceSn || d.device_id || d.deviceId || d.id || d.serial,
+                name: d.deviceName || d.device_name || d.name || d.productName,
+                model: d.productIdentifier || d.deviceModel || d.model
+              })));
+              // Fall back to first device
+              targetDevice = devices[0];
+            }
           } else {
-            this.log(`🍽️ Detected standard feeder (${this.deviceModel})`);
+            // If no deviceId configured, use the first device and set deviceId
+            targetDevice = devices[0];
+            this.deviceId = targetDevice.deviceSn || targetDevice.device_id || targetDevice.deviceId || targetDevice.id || targetDevice.serial;
           }
           
-          this.log(`✅ Found device: ${deviceName} (ID: ${this.deviceId})`);
-          this.log(`📱 Device details:`, JSON.stringify(device, null, 2));
-          return;
+          if (targetDevice) {
+            const deviceName = targetDevice.deviceName || targetDevice.device_name || targetDevice.name || targetDevice.productName || 'Unknown Device';
+            
+            // Detect device model and type
+            this.deviceModel = targetDevice.productIdentifier || 'Unknown';
+            this.isPolarFeeder = this.deviceModel === 'PLAF109' || deviceName.toLowerCase().includes('polar');
+            
+            if (this.isPolarFeeder) {
+              this.log(`🐧 Detected Polar Wet Food Feeder (${this.deviceModel})`);
+              // Update accessory model info
+              this.accessory.getService(this.platform.api.hap.Service.AccessoryInformation)
+                .setCharacteristic(this.platform.api.hap.Characteristic.Model, 'Polar Wet Food Feeder');
+            } else {
+              this.log(`🍽️ Detected standard feeder (${this.deviceModel})`);
+            }
+            
+            this.log(`✅ Found device: ${deviceName} (ID: ${this.deviceId})`);
+            this.log(`📱 Device details:`, JSON.stringify(targetDevice, null, 2));
+            return;
+          }
         } else {
           this.log('⚠️ No devices found in response data array');
         }
@@ -433,7 +455,7 @@ class PetLibroFeeder {
         if (this.rotateTrayService) {
           this.rotateTrayService.setCharacteristic(
             this.platform.api.hap.Characteristic.Name, 
-            `Rotate Tray (Current: ${this.currentTrayPosition + 1})`
+            `${this.name} Rotate Tray (Current: ${this.currentTrayPosition + 1})`
           );
         }
       } else {
