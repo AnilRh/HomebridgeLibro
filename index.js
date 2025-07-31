@@ -75,6 +75,7 @@ class PetLibroFeeder {
     this.isPolarFeeder = false;
     this.currentTrayPosition = 0;
     this.manualFeedId = null;
+    this.currentTemperature = 20.0; // Default temperature in Celsius
     
     // Authentication tokens
     this.accessToken = null;
@@ -92,6 +93,8 @@ class PetLibroFeeder {
     this.switchService = null;
     this.rotateTrayService = null;
     this.audioService = null;
+    this.trayPositionSensor = null;
+    this.temperatureSensor = null;
     
     // Auto-authenticate on startup (with error handling)
     this.authenticate().then(() => {
@@ -154,6 +157,35 @@ class PetLibroFeeder {
     this.audioService.getCharacteristic(this.platform.api.hap.Characteristic.On)
       .onGet(() => false) // Always return false for momentary switch
       .onSet(this.playAudio.bind(this));
+    
+    // Tray Position Sensor - Shows current tray as temperature
+    this.trayPositionSensor = this.accessory.getService('Tray Position') 
+      || this.accessory.addService(this.platform.api.hap.Service.TemperatureSensor, 'Tray Position', 'tray-position');
+    
+    this.trayPositionSensor.setCharacteristic(this.platform.api.hap.Characteristic.Name, `${this.name} Tray Position`);
+    
+    this.trayPositionSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
+      .onGet(() => {
+        // Return current tray position as temperature (1, 2, or 3)
+        return this.currentTrayPosition + 1;
+      });
+    
+    // Real Temperature Sensor - Shows actual device temperature
+    this.temperatureSensor = this.accessory.getService('Temperature') 
+      || this.accessory.addService(this.platform.api.hap.Service.TemperatureSensor, 'Temperature', 'device-temperature');
+    
+    this.temperatureSensor.setCharacteristic(this.platform.api.hap.Characteristic.Name, `${this.name} Temperature`);
+    
+    this.temperatureSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
+      .onGet(() => {
+        // Return actual device temperature in Celsius
+        return this.currentTemperature;
+      });
+    
+    // Get initial tray position and temperature from device
+    this.updateTrayPosition().catch(error => {
+      this.log.error('Failed to get initial tray position:', error.message);
+    });
   }
   
   // Hash password like the HomeAssistant plugin does
@@ -379,6 +411,65 @@ class PetLibroFeeder {
   }
   
   // Polar Feeder Methods
+  async updateTrayPosition() {
+    try {
+      await this.ensureAuthenticated();
+      
+      // Get real-time device info to get current tray position
+      const response = await axios.post(`${this.baseUrl}/device/device/realInfo`, {
+        deviceSn: this.deviceId
+      }, {
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+          'token': this.accessToken,
+          'source': 'ANDROID',
+          'language': 'EN',
+          'timezone': this.config.timezone || 'America/New_York',
+          'version': '1.3.45'
+        },
+        timeout: 10000
+      });
+      
+      if (response.data && response.data.code === 0 && response.data.data) {
+        const realInfo = response.data.data;
+        const platePosition = realInfo.platePosition || 0;
+        const deviceTemperature = realInfo.temperature || 20.0;
+        
+        // Update current tray position (convert 0-based to 1-based for display)
+        this.currentTrayPosition = platePosition;
+        
+        // Update current temperature (already in Celsius from device)
+        this.currentTemperature = deviceTemperature;
+        
+        this.log(`🔄 Current tray position from device: ${platePosition + 1}`);
+        this.log(`🌡️ Current temperature from device: ${deviceTemperature}°C`);
+        
+        // Update the service name to show actual current tray
+        if (this.rotateTrayService) {
+          this.rotateTrayService.setCharacteristic(
+            this.platform.api.hap.Characteristic.Name, 
+            `${this.name} Rotate Tray (Current: ${this.currentTrayPosition + 1})`
+          );
+        }
+        
+        // Update the temperature sensor to show current tray position
+        if (this.trayPositionSensor) {
+          this.trayPositionSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
+            .updateValue(this.currentTrayPosition + 1);
+        }
+        
+        // Update the real temperature sensor
+        if (this.temperatureSensor) {
+          this.temperatureSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
+            .updateValue(this.currentTemperature);
+        }
+      }
+    } catch (error) {
+      this.log.error('Failed to get current tray position:', error.message);
+    }
+  }
+  
   async getPolarDoorState() {
     try {
       // Return current door state based on manual feed status
@@ -448,16 +539,14 @@ class PetLibroFeeder {
       
       if (response.data && response.data.code === 0) {
         this.log('✅ Tray rotation successful');
-        // Update tray position (cycle through 0, 1, 2)
-        this.currentTrayPosition = (this.currentTrayPosition + 1) % 3;
         
-        // Update the service name to show current tray
-        if (this.rotateTrayService) {
-          this.rotateTrayService.setCharacteristic(
-            this.platform.api.hap.Characteristic.Name, 
-            `${this.name} Rotate Tray (Current: ${this.currentTrayPosition + 1})`
-          );
-        }
+        // Get the actual current tray position from the device after rotation
+        setTimeout(() => {
+          this.updateTrayPosition().catch(error => {
+            this.log.error('Failed to update tray position after rotation:', error.message);
+          });
+        }, 1000); // Wait a moment for the device to update its position
+        
       } else {
         const errorMsg = response.data?.msg || 'Unknown error';
         throw new Error(`Tray rotation failed: ${errorMsg}`);
@@ -729,6 +818,12 @@ class PetLibroFeeder {
       }
       if (this.audioService) {
         services.push(this.audioService);
+      }
+      if (this.trayPositionSensor) {
+        services.push(this.trayPositionSensor);
+      }
+      if (this.temperatureSensor) {
+        services.push(this.temperatureSensor);
       }
     }
     
