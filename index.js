@@ -70,6 +70,12 @@ class PetLibroFeeder {
     // Use the correct API endpoint
     this.baseUrl = this.config.apiEndpoint || 'https://api.us.petlibro.com';
     
+    // Device type detection
+    this.deviceModel = null;
+    this.isPolarFeeder = false;
+    this.currentTrayPosition = 0;
+    this.manualFeedId = null;
+    
     // Authentication tokens
     this.accessToken = null;
     this.refreshToken = null;
@@ -82,7 +88,32 @@ class PetLibroFeeder {
       .setCharacteristic(this.platform.api.hap.Characteristic.SerialNumber, this.deviceId || 'Unknown')
       .setCharacteristic(this.platform.api.hap.Characteristic.FirmwareRevision, '1.0.0');
     
-    // Get or create the switch service
+    // Services will be set up after device detection
+    this.switchService = null;
+    this.rotateTrayService = null;
+    this.audioService = null;
+    
+    // Auto-authenticate on startup (with error handling)
+    this.authenticate().then(() => {
+      this.setupServices();
+    }).catch(error => {
+      this.log.error('Failed to authenticate during startup:', error.message);
+      this.log.error('Plugin will continue to retry authentication when used');
+    });
+  }
+  
+  setupServices() {
+    this.log('🔧 Setting up services for device type:', this.isPolarFeeder ? 'Polar Feeder' : 'Standard Feeder');
+    
+    if (this.isPolarFeeder) {
+      this.setupPolarServices();
+    } else {
+      this.setupStandardServices();
+    }
+  }
+  
+  setupStandardServices() {
+    // Get or create the switch service for standard feeders
     this.switchService = this.accessory.getService(this.platform.api.hap.Service.Switch) 
       || this.accessory.addService(this.platform.api.hap.Service.Switch);
     
@@ -91,12 +122,38 @@ class PetLibroFeeder {
     this.switchService.getCharacteristic(this.platform.api.hap.Characteristic.On)
       .onGet(this.getOn.bind(this))
       .onSet(this.setOn.bind(this));
+  }
+  
+  setupPolarServices() {
+    // Door Control - Toggle switch (on = open door, off = close door)
+    this.switchService = this.accessory.getService(this.platform.api.hap.Service.Switch) 
+      || this.accessory.addService(this.platform.api.hap.Service.Switch);
     
-    // Auto-authenticate on startup (with error handling)
-    this.authenticate().catch(error => {
-      this.log.error('Failed to authenticate during startup:', error.message);
-      this.log.error('Plugin will continue to retry authentication when used');
-    });
+    this.switchService.setCharacteristic(this.platform.api.hap.Characteristic.Name, 'Door Control');
+    
+    this.switchService.getCharacteristic(this.platform.api.hap.Characteristic.On)
+      .onGet(this.getPolarDoorState.bind(this))
+      .onSet(this.setPolarDoorState.bind(this));
+    
+    // Rotate Tray - Momentary switch
+    this.rotateTrayService = this.accessory.getService('Rotate Tray') 
+      || this.accessory.addService(this.platform.api.hap.Service.Switch, 'Rotate Tray', 'rotate-tray');
+    
+    this.rotateTrayService.setCharacteristic(this.platform.api.hap.Characteristic.Name, `Rotate Tray (Current: ${this.currentTrayPosition + 1})`);
+    
+    this.rotateTrayService.getCharacteristic(this.platform.api.hap.Characteristic.On)
+      .onGet(() => false) // Always return false for momentary switch
+      .onSet(this.rotateTray.bind(this));
+    
+    // Play Audio - Momentary switch
+    this.audioService = this.accessory.getService('Play Audio') 
+      || this.accessory.addService(this.platform.api.hap.Service.Switch, 'Play Audio', 'play-audio');
+    
+    this.audioService.setCharacteristic(this.platform.api.hap.Characteristic.Name, 'Play Audio');
+    
+    this.audioService.getCharacteristic(this.platform.api.hap.Characteristic.On)
+      .onGet(() => false) // Always return false for momentary switch
+      .onSet(this.playAudio.bind(this));
   }
   
   // Hash password like the HomeAssistant plugin does
@@ -258,6 +315,19 @@ class PetLibroFeeder {
           this.deviceId = device.deviceSn || device.device_id || device.deviceId || device.id || device.serial;
           const deviceName = device.deviceName || device.device_name || device.name || 'Unknown Device';
           
+          // Detect device model and type
+          this.deviceModel = device.deviceModel || device.model || device.type || 'Unknown';
+          this.isPolarFeeder = this.deviceModel === 'PLAF109' || deviceName.toLowerCase().includes('polar');
+          
+          if (this.isPolarFeeder) {
+            this.log(`🐧 Detected Polar Wet Food Feeder (${this.deviceModel})`);
+            // Update accessory model info
+            this.accessory.getService(this.platform.api.hap.Service.AccessoryInformation)
+              .setCharacteristic(this.platform.api.hap.Characteristic.Model, 'Polar Wet Food Feeder');
+          } else {
+            this.log(`🍽️ Detected standard feeder (${this.deviceModel})`);
+          }
+          
           this.log(`✅ Found device: ${deviceName} (ID: ${this.deviceId})`);
           this.log(`📱 Device details:`, JSON.stringify(device, null, 2));
           return;
@@ -283,6 +353,236 @@ class PetLibroFeeder {
   async ensureAuthenticated() {
     if (!this.accessToken || Date.now() >= this.tokenExpiry) {
       await this.refreshAuthToken();
+    }
+  }
+  
+  // Polar Feeder Methods
+  async getPolarDoorState() {
+    try {
+      // Return current door state based on manual feed status
+      return this.manualFeedId !== null;
+    } catch (error) {
+      this.log.error('Failed to get door state:', error.message);
+      return false;
+    }
+  }
+  
+  async setPolarDoorState(value) {
+    try {
+      this.log(`🚪 ${value ? 'Opening' : 'Closing'} door for Polar feeder`);
+      await this.ensureAuthenticated();
+      
+      if (value) {
+        // Open door - start manual feeding
+        await this.triggerPolarFeed(true);
+      } else {
+        // Close door - stop manual feeding
+        await this.triggerPolarFeed(false);
+      }
+      
+    } catch (error) {
+      this.log.error(`Failed to ${value ? 'open' : 'close'} door:`, error.message);
+      // Reset switch state on error
+      setTimeout(() => {
+        if (this.switchService) {
+          this.switchService.getCharacteristic(this.platform.api.hap.Characteristic.On)
+            .updateValue(!value);
+        }
+      }, 100);
+    }
+  }
+  
+  async rotateTray(value) {
+    if (!value) {
+      this.log('Rotate tray switch turned OFF (ignored - this is a momentary switch)');
+      return;
+    }
+    
+    try {
+      this.log('🔄 Rotating tray for Polar feeder');
+      await this.ensureAuthenticated();
+      
+      if (!this.deviceId) {
+        throw new Error('Device ID not found - cannot rotate tray');
+      }
+      
+      const requestId = this.generateRequestId();
+      
+      const response = await axios.post(`${this.baseUrl}/device/device/setRotateFoodBowl`, {
+        deviceSn: this.deviceId,
+        requestId: requestId
+      }, {
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+          'token': this.accessToken,
+          'source': 'ANDROID',
+          'language': 'EN',
+          'timezone': this.config.timezone || 'America/New_York',
+          'version': '1.3.45'
+        },
+        timeout: 10000
+      });
+      
+      if (response.data && response.data.code === 0) {
+        this.log('✅ Tray rotation successful');
+        // Update tray position (cycle through 0, 1, 2)
+        this.currentTrayPosition = (this.currentTrayPosition + 1) % 3;
+        
+        // Update the service name to show current tray
+        if (this.rotateTrayService) {
+          this.rotateTrayService.setCharacteristic(
+            this.platform.api.hap.Characteristic.Name, 
+            `Rotate Tray (Current: ${this.currentTrayPosition + 1})`
+          );
+        }
+      } else {
+        const errorMsg = response.data?.msg || 'Unknown error';
+        throw new Error(`Tray rotation failed: ${errorMsg}`);
+      }
+      
+    } catch (error) {
+      this.log.error('Failed to rotate tray:', error.message);
+    } finally {
+      // Reset momentary switch
+      setTimeout(() => {
+        if (this.rotateTrayService) {
+          this.rotateTrayService.getCharacteristic(this.platform.api.hap.Characteristic.On)
+            .updateValue(false);
+        }
+      }, 100);
+    }
+  }
+  
+  async playAudio(value) {
+    if (!value) {
+      this.log('Play audio switch turned OFF (ignored - this is a momentary switch)');
+      return;
+    }
+    
+    try {
+      this.log('🔊 Playing audio for Polar feeder');
+      await this.ensureAuthenticated();
+      
+      if (!this.deviceId) {
+        throw new Error('Device ID not found - cannot play audio');
+      }
+      
+      const requestId = this.generateRequestId();
+      
+      const response = await axios.post(`${this.baseUrl}/device/device/setFeedAudio`, {
+        deviceSn: this.deviceId,
+        requestId: requestId
+      }, {
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+          'token': this.accessToken,
+          'source': 'ANDROID',
+          'language': 'EN',
+          'timezone': this.config.timezone || 'America/New_York',
+          'version': '1.3.45'
+        },
+        timeout: 10000
+      });
+      
+      if (response.data && response.data.code === 0) {
+        this.log('✅ Audio playback successful');
+      } else {
+        const errorMsg = response.data?.msg || 'Unknown error';
+        throw new Error(`Audio playback failed: ${errorMsg}`);
+      }
+      
+    } catch (error) {
+      this.log.error('Failed to play audio:', error.message);
+    } finally {
+      // Reset momentary switch
+      setTimeout(() => {
+        if (this.audioService) {
+          this.audioService.getCharacteristic(this.platform.api.hap.Characteristic.On)
+            .updateValue(false);
+        }
+      }, 100);
+    }
+  }
+  
+  async triggerPolarFeed(start) {
+    try {
+      await this.ensureAuthenticated();
+      
+      if (!this.deviceId) {
+        throw new Error('Device ID not found - cannot control feeding');
+      }
+      
+      const requestId = this.generateRequestId();
+      
+      if (start) {
+        // Start manual feeding (open door)
+        this.log('📡 Sending manual feed start command to Polar feeder');
+        
+        const response = await axios.post(`${this.baseUrl}/device/device/setManualFeedNow`, {
+          deviceSn: this.deviceId,
+          requestId: requestId
+        }, {
+          headers: {
+            'Authorization': `Bearer ${this.accessToken}`,
+            'Content-Type': 'application/json',
+            'token': this.accessToken,
+            'source': 'ANDROID',
+            'language': 'EN',
+            'timezone': this.config.timezone || 'America/New_York',
+            'version': '1.3.45'
+          },
+          timeout: 10000
+        });
+        
+        if (response.data && response.data.code === 0) {
+          this.log('✅ Manual feed started successfully');
+          // Store the manual feed ID for stopping later
+          this.manualFeedId = response.data.data?.manualFeedId || Date.now();
+        } else {
+          const errorMsg = response.data?.msg || 'Unknown error';
+          throw new Error(`Manual feed start failed: ${errorMsg}`);
+        }
+        
+      } else {
+        // Stop manual feeding (close door)
+        if (!this.manualFeedId) {
+          this.log('⚠️ No active manual feed to stop');
+          return;
+        }
+        
+        this.log('📡 Sending manual feed stop command to Polar feeder');
+        
+        const response = await axios.post(`${this.baseUrl}/device/device/setStopFeedNow`, {
+          deviceSn: this.deviceId,
+          manualFeedId: this.manualFeedId,
+          requestId: requestId
+        }, {
+          headers: {
+            'Authorization': `Bearer ${this.accessToken}`,
+            'Content-Type': 'application/json',
+            'token': this.accessToken,
+            'source': 'ANDROID',
+            'language': 'EN',
+            'timezone': this.config.timezone || 'America/New_York',
+            'version': '1.3.45'
+          },
+          timeout: 10000
+        });
+        
+        if (response.data && response.data.code === 0) {
+          this.log('✅ Manual feed stopped successfully');
+          this.manualFeedId = null;
+        } else {
+          const errorMsg = response.data?.msg || 'Unknown error';
+          throw new Error(`Manual feed stop failed: ${errorMsg}`);
+        }
+      }
+      
+    } catch (error) {
+      this.log.error(`Failed to ${start ? 'start' : 'stop'} manual feeding:`, error.message);
+      throw error;
     }
   }
   
@@ -397,6 +697,21 @@ class PetLibroFeeder {
   }
   
   getServices() {
-    return [this.informationService, this.switchService];
+    const services = [];
+    
+    if (this.switchService) {
+      services.push(this.switchService);
+    }
+    
+    if (this.isPolarFeeder) {
+      if (this.rotateTrayService) {
+        services.push(this.rotateTrayService);
+      }
+      if (this.audioService) {
+        services.push(this.audioService);
+      }
+    }
+    
+    return services;
   }
 }
