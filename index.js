@@ -76,6 +76,8 @@ class PetLibroFeeder {
     this.currentTrayPosition = 0;
     this.manualFeedId = null;
     this.currentTemperature = 20.0; // Default temperature in Celsius
+    this.lastDataUpdate = 0; // Timestamp of last data fetch
+    this.cacheTimeout = 5 * 60 * 1000; // 5 minutes cache
     
     // Authentication tokens
     this.accessToken = null;
@@ -165,8 +167,9 @@ class PetLibroFeeder {
     this.trayPositionSensor.setCharacteristic(this.platform.api.hap.Characteristic.Name, `${this.name} Tray Position`);
     
     this.trayPositionSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
-      .onGet(() => {
-        // Return current tray position as temperature (1, 2, or 3)
+      .onGet(async () => {
+        // Fetch fresh data if cache is stale, then return current tray position
+        await this.updateTrayPosition();
         return this.currentTrayPosition + 1;
       });
     
@@ -177,8 +180,9 @@ class PetLibroFeeder {
     this.temperatureSensor.setCharacteristic(this.platform.api.hap.Characteristic.Name, `${this.name} Temperature`);
     
     this.temperatureSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
-      .onGet(() => {
-        // Return actual device temperature in Celsius
+      .onGet(async () => {
+        // Fetch fresh data if cache is stale, then return actual device temperature
+        await this.updateTrayPosition();
         return this.currentTemperature;
       });
     
@@ -411,8 +415,15 @@ class PetLibroFeeder {
   }
   
   // Polar Feeder Methods
-  async updateTrayPosition() {
+  async updateTrayPosition(forceUpdate = false) {
     try {
+      // Check if we have fresh data (within 5 minutes) and not forcing update
+      const now = Date.now();
+      if (!forceUpdate && (now - this.lastDataUpdate) < this.cacheTimeout) {
+        this.log('Using cached temperature data (less than 5 minutes old)');
+        return;
+      }
+      
       await this.ensureAuthenticated();
       
       // Get real-time device info to get current tray position
@@ -441,6 +452,9 @@ class PetLibroFeeder {
         
         // Update current temperature (already in Celsius from device)
         this.currentTemperature = deviceTemperature;
+        
+        // Update cache timestamp
+        this.lastDataUpdate = Date.now();
         
         this.log(`🔄 Current tray position from device: ${platePosition + 1}`);
         this.log(`🌡️ Current temperature from device: ${deviceTemperature}°C`);
@@ -542,7 +556,7 @@ class PetLibroFeeder {
         
         // Get the actual current tray position from the device after rotation
         setTimeout(() => {
-          this.updateTrayPosition().catch(error => {
+          this.updateTrayPosition(true).catch(error => {
             this.log.error('Failed to update tray position after rotation:', error.message);
           });
         }, 1000); // Wait a moment for the device to update its position
