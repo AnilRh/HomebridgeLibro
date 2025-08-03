@@ -462,6 +462,9 @@ class PetLibroFeeder {
         timeout: 10000
       });
       
+      this.log(`📊 API Response status: ${response.status}`);
+      this.log(`📊 API Response data:`, JSON.stringify(response.data, null, 2));
+      
       if (response.data && response.data.code === 0 && response.data.data) {
         const realInfo = response.data.data;
         const platePosition = realInfo.platePosition || 0;
@@ -686,7 +689,8 @@ class PetLibroFeeder {
         if (response.data && response.data.code === 0) {
           this.log('✅ Manual feed started successfully');
           // Store the manual feed ID for stopping later
-          this.manualFeedId = response.data.data?.manualFeedId || Date.now();
+          this.manualFeedId = response.data.data?.manualFeedId || response.data.data?.feedId || Date.now();
+          this.log(`📝 Stored manual feed ID: ${this.manualFeedId}`);
         } else {
           const errorMsg = response.data?.msg || 'Unknown error';
           throw new Error(`Manual feed start failed: ${errorMsg}`);
@@ -699,12 +703,15 @@ class PetLibroFeeder {
           return;
         }
         
-        this.log('📡 Sending manual feed stop command to Polar feeder');
+        this.log(`📡 Sending manual feed stop command to Polar feeder with feedId: ${this.manualFeedId}`);
         
-        const response = await axios.post(`${this.baseUrl}/device/wetFeedingPlan/stopFeedNow`, {
+        const stopPayload = {
           deviceSn: this.deviceId,
           feedId: this.manualFeedId
-        }, {
+        };
+        this.log(`📝 Stop feed payload:`, JSON.stringify(stopPayload, null, 2));
+        
+        const response = await axios.post(`${this.baseUrl}/device/wetFeedingPlan/stopFeedNow`, stopPayload, {
           headers: {
             'Authorization': `Bearer ${this.accessToken}`,
             'Content-Type': 'application/json',
@@ -717,11 +724,16 @@ class PetLibroFeeder {
           timeout: 10000
         });
         
+        this.log(`📊 Stop feed response status: ${response.status}`);
+        this.log(`📊 Stop feed response data:`, JSON.stringify(response.data, null, 2));
+        
         if (response.data && response.data.code === 0) {
           this.log('✅ Manual feed stopped successfully');
           this.manualFeedId = null;
         } else {
           const errorMsg = response.data?.msg || 'Unknown error';
+          const errorCode = response.data?.code || 'Unknown code';
+          this.log(`❌ Stop feed failed - Code: ${errorCode}, Message: ${errorMsg}`);
           throw new Error(`Manual feed stop failed: ${errorMsg}`);
         }
       }
