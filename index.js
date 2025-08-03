@@ -168,9 +168,17 @@ class PetLibroFeeder {
     
     this.trayPositionSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
       .onGet(async () => {
-        // Fetch fresh data if cache is stale, then return current tray position
-        await this.updateTrayPosition();
-        return this.currentTrayPosition + 1;
+        try {
+          this.log('🔍 HomeKit requesting tray position data');
+          // Fetch fresh data if cache is stale, then return current tray position
+          await this.updateTrayPosition();
+          const value = this.currentTrayPosition + 1;
+          this.log(`📊 Returning tray position: ${value}`);
+          return value;
+        } catch (error) {
+          this.log.error('Error in tray position onGet:', error.message);
+          return this.currentTrayPosition + 1;
+        }
       });
     
     // Real Temperature Sensor - Shows actual device temperature
@@ -181,13 +189,22 @@ class PetLibroFeeder {
     
     this.temperatureSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
       .onGet(async () => {
-        // Fetch fresh data if cache is stale, then return actual device temperature
-        await this.updateTrayPosition();
-        return this.currentTemperature;
+        try {
+          this.log('🌡️ HomeKit requesting temperature data');
+          // Fetch fresh data if cache is stale, then return actual device temperature
+          await this.updateTrayPosition();
+          const value = this.currentTemperature;
+          this.log(`🌡️ Returning temperature: ${value}°C`);
+          return value;
+        } catch (error) {
+          this.log.error('Error in temperature onGet:', error.message);
+          return this.currentTemperature;
+        }
       });
     
     // Get initial tray position and temperature from device
-    this.updateTrayPosition().catch(error => {
+    this.log('🚀 Setting up Polar services - fetching initial data');
+    this.updateTrayPosition(true).catch(error => {
       this.log.error('Failed to get initial tray position:', error.message);
     });
   }
@@ -419,10 +436,13 @@ class PetLibroFeeder {
     try {
       // Check if we have fresh data (within 5 minutes) and not forcing update
       const now = Date.now();
+      const cacheAge = (now - this.lastDataUpdate) / 1000; // seconds
       if (!forceUpdate && (now - this.lastDataUpdate) < this.cacheTimeout) {
-        this.log('Using cached temperature data (less than 5 minutes old)');
+        this.log(`💾 Using cached temperature data (${Math.round(cacheAge)}s old, cache valid for ${this.cacheTimeout/1000}s)`);
         return;
       }
+      
+      this.log(`🔄 Fetching fresh temperature data (cache ${Math.round(cacheAge)}s old, forceUpdate: ${forceUpdate})`);
       
       await this.ensureAuthenticated();
       
@@ -469,12 +489,15 @@ class PetLibroFeeder {
         
         // Update the temperature sensor to show current tray position
         if (this.trayPositionSensor) {
+          const trayValue = this.currentTrayPosition + 1;
+          this.log(`📲 Pushing tray position update to HomeKit: ${trayValue}`);
           this.trayPositionSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
-            .updateValue(this.currentTrayPosition + 1);
+            .updateValue(trayValue);
         }
         
         // Update the real temperature sensor
         if (this.temperatureSensor) {
+          this.log(`📲 Pushing temperature update to HomeKit: ${this.currentTemperature}°C`);
           this.temperatureSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
             .updateValue(this.currentTemperature);
         }
