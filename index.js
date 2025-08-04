@@ -76,8 +76,8 @@ class PetLibroFeeder {
     this.currentTrayPosition = 0;
     this.manualFeedId = null;
     this.currentTemperature = 20.0; // Default temperature in Celsius
-    this.lastDataUpdate = 0; // Timestamp of last data fetch
-    this.cacheTimeout = 5 * 60 * 1000; // 5 minutes cache
+    this.lastDataUpdate = Date.now(); // Initialize cache timestamp
+    this.cacheValidityMs = 5 * 60 * 1000; // 5 minutes cache
     
     // Authentication tokens
     this.accessToken = null;
@@ -437,8 +437,8 @@ class PetLibroFeeder {
       // Check if we have fresh data (within 5 minutes) and not forcing update
       const now = Date.now();
       const cacheAge = (now - this.lastDataUpdate) / 1000; // seconds
-      if (!forceUpdate && (now - this.lastDataUpdate) < this.cacheTimeout) {
-        this.log(`💾 Using cached temperature data (${Math.round(cacheAge)}s old, cache valid for ${this.cacheTimeout/1000}s)`);
+      if (!forceUpdate && (now - this.lastDataUpdate) < this.cacheValidityMs) {
+        this.log(`💾 Using cached temperature data (${Math.round(cacheAge)}s old, cache valid for ${this.cacheValidityMs/1000}s)`);
         return;
       }
       
@@ -467,43 +467,50 @@ class PetLibroFeeder {
       
       if (response.data && response.data.code === 0 && response.data.data) {
         const realInfo = response.data.data;
-        const platePosition = realInfo.platePosition || 0;
-        const deviceTemperature = realInfo.temperature || 20.0;
+        this.log(`🔍 Raw device data:`, JSON.stringify(realInfo, null, 2));
         
-        // Update current tray position (convert 0-based to 1-based for display)
+        // Try different possible field names for plate position
+        const platePosition = realInfo.platePosition || realInfo.plate || realInfo.currentPlate || 0;
+        
+        // Try different possible field names for temperature
+        const deviceTemperature = realInfo.temperature || realInfo.temp || realInfo.currentTemp || 20.0;
+        
+        this.log(`🔍 Extracted values - platePosition: ${platePosition}, temperature: ${deviceTemperature}`);
+        
+        // Update current tray position (ensure it's 1-based for display)
         this.currentTrayPosition = platePosition;
         
-        // Update current temperature (already in Celsius from device)
+        // Update current temperature (ensure it's in Celsius)
         this.currentTemperature = deviceTemperature;
         
         // Update cache timestamp
         this.lastDataUpdate = Date.now();
         
-        this.log(`🔄 Current tray position from device: ${platePosition + 1}`);
         this.log(`🌡️ Current temperature from device: ${deviceTemperature}°C`);
+        this.log(`🍽️ Current tray position from device: ${platePosition} (display: ${platePosition})`);
         
-        // Update the service name to show actual current tray
-        if (this.rotateTrayService) {
-          this.rotateTrayService.setCharacteristic(
-            this.platform.api.hap.Characteristic.Name, 
-            `${this.name} Rotate Tray (Current: ${this.currentTrayPosition + 1})`
-          );
-        }
-        
-        // Update the temperature sensor to show current tray position
+        // Update HomeKit services with new values
         if (this.trayPositionSensor) {
-          const trayValue = this.currentTrayPosition + 1;
-          this.log(`📲 Pushing tray position update to HomeKit: ${trayValue}`);
+          const displayPosition = platePosition || 1; // Ensure at least 1
           this.trayPositionSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
-            .updateValue(trayValue);
+            .updateValue(displayPosition);
+          this.log(`📲 Pushing tray position update to HomeKit: ${displayPosition}`);
         }
         
-        // Update the real temperature sensor
         if (this.temperatureSensor) {
-          this.log(`📲 Pushing temperature update to HomeKit: ${this.currentTemperature}°C`);
           this.temperatureSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
-            .updateValue(this.currentTemperature);
+            .updateValue(deviceTemperature);
+          this.log(`📲 Pushing temperature update to HomeKit: ${deviceTemperature}°C`);
         }
+        
+      } else {
+        this.log('⚠️ Failed to get device real info or invalid response format');
+        this.log('📊 Response structure:', {
+          hasData: !!response.data,
+          code: response.data?.code,
+          hasDataField: !!(response.data?.data),
+          dataKeys: response.data?.data ? Object.keys(response.data.data) : []
+        });
       }
     } catch (error) {
       this.log.error('Failed to get current tray position:', error.message);
@@ -686,11 +693,20 @@ class PetLibroFeeder {
           timeout: 10000
         });
         
+        this.log(`📊 Start feed response status: ${response.status}`);
+        this.log(`📊 Start feed response data:`, JSON.stringify(response.data, null, 2));
+        
         if (response.data && response.data.code === 0) {
           this.log('✅ Manual feed started successfully');
-          // Store the manual feed ID for stopping later
-          this.manualFeedId = response.data.data?.manualFeedId || response.data.data?.feedId || Date.now();
-          this.log(`📝 Stored manual feed ID: ${this.manualFeedId}`);
+          // Store the manual feed ID for stopping later - try different possible field names
+          this.manualFeedId = response.data.data?.manualFeedId || response.data.data?.feedId || response.data.data?.id;
+          
+          if (!this.manualFeedId) {
+            this.log('⚠️ No feed ID returned from API, cannot stop feed later');
+            this.log('📊 Available data fields:', Object.keys(response.data.data || {}));
+          } else {
+            this.log(`📝 Stored manual feed ID: ${this.manualFeedId}`);
+          }
         } else {
           const errorMsg = response.data?.msg || 'Unknown error';
           throw new Error(`Manual feed start failed: ${errorMsg}`);
