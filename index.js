@@ -130,6 +130,16 @@ class PetLibroFeeder {
   }
   
   setupPolarServices() {
+    // Remove old services if they exist
+    const oldRotateService = this.accessory.getService('Rotate Tray');
+    if (oldRotateService) {
+      this.accessory.removeService(oldRotateService);
+    }
+    const oldTrayPositionService = this.accessory.getService('Tray Position');
+    if (oldTrayPositionService) {
+      this.accessory.removeService(oldTrayPositionService);
+    }
+    
     // Door Control - Toggle switch (on = open door, off = close door)
     this.switchService = this.accessory.getService(this.platform.api.hap.Service.Switch) 
       || this.accessory.addService(this.platform.api.hap.Service.Switch);
@@ -140,15 +150,41 @@ class PetLibroFeeder {
       .onGet(this.getPolarDoorState.bind(this))
       .onSet(this.setPolarDoorState.bind(this));
     
-    // Rotate Tray - Momentary switch
-    this.rotateTrayService = this.accessory.getService('Rotate Tray') 
-      || this.accessory.addService(this.platform.api.hap.Service.Switch, 'Rotate Tray', 'rotate-tray');
+    // Tray Selection - Fan slider (0-33% = tray 1, 34-66% = tray 2, 67-100% = tray 3)
+    this.trayFanService = this.accessory.getService('Tray Selection') 
+      || this.accessory.addService(this.platform.api.hap.Service.Fan, 'Tray Selection', 'tray-selection');
     
-    this.rotateTrayService.setCharacteristic(this.platform.api.hap.Characteristic.Name, `${this.name} Rotate Tray (Current: ${this.currentTrayPosition + 1})`);
+    this.trayFanService.setCharacteristic(this.platform.api.hap.Characteristic.Name, `${this.name} Tray Selection`);
     
-    this.rotateTrayService.getCharacteristic(this.platform.api.hap.Characteristic.On)
-      .onGet(() => false) // Always return false for momentary switch
-      .onSet(this.rotateTray.bind(this));
+    // Fan On/Off characteristic - always on when tray is selected
+    this.trayFanService.getCharacteristic(this.platform.api.hap.Characteristic.On)
+      .onGet(() => true) // Always on
+      .onSet(() => {}); // Ignore off commands
+    
+    // Rotation Speed characteristic - maps to tray position
+    this.trayFanService.getCharacteristic(this.platform.api.hap.Characteristic.RotationSpeed)
+      .onGet(async () => {
+        try {
+          this.log('🔍 HomeKit requesting tray position data');
+          await this.updateTrayPosition();
+          const percentage = this.trayPositionToPercentage(this.currentTrayPosition);
+          this.log(`📊 Returning tray position: ${this.currentTrayPosition} (${percentage}%)`);
+          return percentage;
+        } catch (error) {
+          this.log.error('Error in tray position onGet:', error.message);
+          return this.trayPositionToPercentage(this.currentTrayPosition);
+        }
+      })
+      .onSet(async (value) => {
+        try {
+          this.log(`🎯 Setting tray position to ${value}%`);
+          const targetTray = this.percentageToTrayPosition(value);
+          await this.setTrayPosition(targetTray);
+        } catch (error) {
+          this.log.error('Error setting tray position:', error.message);
+          throw error;
+        }
+      });
     
     // Play Audio - Momentary switch
     this.audioService = this.accessory.getService('Play Audio') 
@@ -159,27 +195,6 @@ class PetLibroFeeder {
     this.audioService.getCharacteristic(this.platform.api.hap.Characteristic.On)
       .onGet(() => false) // Always return false for momentary switch
       .onSet(this.playAudio.bind(this));
-    
-    // Tray Position Sensor - Shows current tray as temperature
-    this.trayPositionSensor = this.accessory.getService('Tray Position') 
-      || this.accessory.addService(this.platform.api.hap.Service.TemperatureSensor, 'Tray Position', 'tray-position');
-    
-    this.trayPositionSensor.setCharacteristic(this.platform.api.hap.Characteristic.Name, `${this.name} Tray Position`);
-    
-    this.trayPositionSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
-      .onGet(async () => {
-        try {
-          this.log('🔍 HomeKit requesting tray position data');
-          // Fetch fresh data if cache is stale, then return current tray position
-          await this.updateTrayPosition();
-          const value = this.currentTrayPosition + 1;
-          this.log(`📊 Returning tray position: ${value}`);
-          return value;
-        } catch (error) {
-          this.log.error('Error in tray position onGet:', error.message);
-          return this.currentTrayPosition + 1;
-        }
-      });
     
     // Real Temperature Sensor - Shows actual device temperature
     this.temperatureSensor = this.accessory.getService('Temperature') 
@@ -207,6 +222,65 @@ class PetLibroFeeder {
     this.updateTrayPosition(true).catch(error => {
       this.log.error('Failed to get initial tray position:', error.message);
     });
+  }
+  
+  // Helper methods for tray position and percentage conversion
+  trayPositionToPercentage(trayPosition) {
+    // Convert tray position (0, 1, 2) to percentage (16%, 50%, 83%)
+    // Use middle values of each range for better UX
+    switch (trayPosition) {
+      case 0: return 16;  // Middle of 0-33%
+      case 1: return 50;  // Middle of 34-66%
+      case 2: return 83;  // Middle of 67-100%
+      default: return 50; // Default to tray 2
+    }
+  }
+  
+  percentageToTrayPosition(percentage) {
+    // Convert percentage to tray position (0, 1, 2)
+    if (percentage <= 33) return 0;      // Tray 1
+    if (percentage <= 66) return 1;      // Tray 2
+    return 2;                            // Tray 3
+  }
+  
+  async setTrayPosition(targetTray) {
+    // Smart rotation logic - calculate shortest path
+    await this.updateTrayPosition(); // Get current position
+    
+    const currentTray = this.currentTrayPosition;
+    if (currentTray === targetTray) {
+      this.log(`🎯 Already at target tray ${targetTray + 1}`);
+      return;
+    }
+    
+    // Calculate rotations needed (shortest path with wraparound)
+    let rotations;
+    const totalTrays = 3;
+    const forward = (targetTray - currentTray + totalTrays) % totalTrays;
+    const backward = (currentTray - targetTray + totalTrays) % totalTrays;
+    
+    if (forward <= backward) {
+      rotations = forward;
+      this.log(`🔄 Moving from tray ${currentTray + 1} to ${targetTray + 1} (${rotations} rotations forward)`);
+    } else {
+      rotations = backward;
+      this.log(`🔄 Moving from tray ${currentTray + 1} to ${targetTray + 1} (${rotations} rotations backward)`);
+    }
+    
+    // Perform the rotations
+    for (let i = 0; i < rotations; i++) {
+      this.log(`🔄 Rotation ${i + 1}/${rotations}`);
+      await this.rotateTray();
+      // Small delay between rotations
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    // Update the fan service to reflect the new position
+    const newPercentage = this.trayPositionToPercentage(targetTray);
+    this.trayFanService.getCharacteristic(this.platform.api.hap.Characteristic.RotationSpeed)
+      .updateValue(newPercentage);
+    
+    this.log(`✅ Successfully moved to tray ${targetTray + 1} (${newPercentage}%)`);
   }
   
   // Hash password like the HomeAssistant plugin does
