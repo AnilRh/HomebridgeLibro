@@ -262,8 +262,17 @@ class PetLibroFeeder {
     for (let i = 0; i < rotations; i++) {
       this.log(`🔄 Rotation ${i + 1}/${rotations}`);
       await this.rotateTray();
+      // Update our internal position tracking after each rotation
+      this.currentTrayPosition = (this.currentTrayPosition + 1) % totalTrays;
+      this.log(`📍 Internal position updated to tray ${this.currentTrayPosition + 1}`);
       // Small delay between rotations
       await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    // Verify we're at the expected position
+    if (this.currentTrayPosition !== targetTray) {
+      this.log.warn(`⚠️ Position mismatch! Expected tray ${targetTray + 1}, internal shows tray ${this.currentTrayPosition + 1}`);
+      this.currentTrayPosition = targetTray; // Force correct position
     }
     
     // Update the fan service to reflect the new position with canonical percentage
