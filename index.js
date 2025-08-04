@@ -448,6 +448,7 @@ class PetLibroFeeder {
       
       // Get real-time device info to get current tray position
       const response = await axios.post(`${this.baseUrl}/device/device/realInfo`, {
+        id: this.deviceId,
         deviceSn: this.deviceId
       }, {
         headers: {
