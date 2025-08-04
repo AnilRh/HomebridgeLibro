@@ -226,25 +226,24 @@ class PetLibroFeeder {
   
   // Helper methods for tray position and percentage conversion
   trayPositionToPercentage(trayPosition) {
-    // Convert tray position (0, 1, 2) to percentage (16%, 50%, 83%)
-    // Use middle values of each range for better UX
+    // Convert tray position (0, 1, 2) to discrete percentage values
     switch (trayPosition) {
-      case 0: return 16;  // Middle of 0-33%
-      case 1: return 50;  // Middle of 34-66%
-      case 2: return 83;  // Middle of 67-100%
+      case 0: return 0;   // Tray 1 = 0%
+      case 1: return 50;  // Tray 2 = 50%
+      case 2: return 100; // Tray 3 = 100%
       default: return 50; // Default to tray 2
     }
   }
   
   percentageToTrayPosition(percentage) {
-    // Convert percentage to tray position (0, 1, 2)
-    if (percentage <= 33) return 0;      // Tray 1
-    if (percentage <= 66) return 1;      // Tray 2
-    return 2;                            // Tray 3
+    // Convert percentage to tray position with snap-to behavior
+    if (percentage <= 25) return 0;      // 0-25% → Tray 1
+    if (percentage <= 75) return 1;      // 26-75% → Tray 2
+    return 2;                            // 76-100% → Tray 3
   }
   
   async setTrayPosition(targetTray) {
-    // Smart rotation logic - calculate shortest path
+    // Smart rotation logic - API only supports forward (counter-clockwise) rotation
     await this.updateTrayPosition(); // Get current position
     
     const currentTray = this.currentTrayPosition;
@@ -253,19 +252,11 @@ class PetLibroFeeder {
       return;
     }
     
-    // Calculate rotations needed (shortest path with wraparound)
-    let rotations;
+    // Calculate rotations needed (forward only, with wraparound)
     const totalTrays = 3;
-    const forward = (targetTray - currentTray + totalTrays) % totalTrays;
-    const backward = (currentTray - targetTray + totalTrays) % totalTrays;
+    const rotations = (targetTray - currentTray + totalTrays) % totalTrays;
     
-    if (forward <= backward) {
-      rotations = forward;
-      this.log(`🔄 Moving from tray ${currentTray + 1} to ${targetTray + 1} (${rotations} rotations forward)`);
-    } else {
-      rotations = backward;
-      this.log(`🔄 Moving from tray ${currentTray + 1} to ${targetTray + 1} (${rotations} rotations backward)`);
-    }
+    this.log(`🔄 Moving from tray ${currentTray + 1} to ${targetTray + 1} (${rotations} rotations)`);
     
     // Perform the rotations
     for (let i = 0; i < rotations; i++) {
@@ -275,12 +266,12 @@ class PetLibroFeeder {
       await new Promise(resolve => setTimeout(resolve, 1000));
     }
     
-    // Update the fan service to reflect the new position
+    // Update the fan service to reflect the new position with canonical percentage
     const newPercentage = this.trayPositionToPercentage(targetTray);
     this.trayFanService.getCharacteristic(this.platform.api.hap.Characteristic.RotationSpeed)
       .updateValue(newPercentage);
     
-    this.log(`✅ Successfully moved to tray ${targetTray + 1} (${newPercentage}%)`);
+    this.log(`✅ Successfully moved to tray ${targetTray + 1} (slider snapped to ${newPercentage}%)`);
   }
   
   // Hash password like the HomeAssistant plugin does
