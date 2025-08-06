@@ -4,6 +4,8 @@
 
 const axios = require('axios');
 const crypto = require('crypto');
+const CachedPetLibroAPI = require('./lib/cached-petlibro-api');
+const { StandardFeeder, PolarFeeder } = require('./lib/feeder-devices');
 
 let Service, Characteristic;
 
@@ -60,51 +62,57 @@ class PetLibroFeeder {
     this.accessory = accessory;
     this.log = platform.log;
     this.config = platform.config;
-    this.name = this.config.name || 'Pet Feeder';
+    this.name = this.config.name || 'PetLibro Feeder';
     
-    // PetLibro API configuration
-    this.email = this.config.email;
-    this.password = this.config.password;
-    this.deviceId = this.config.deviceId;
-    
-    // Use the correct API endpoint
-    this.baseUrl = this.config.apiEndpoint || 'https://api.us.petlibro.com';
-    
-    // Device type detection
-    this.deviceModel = null;
-    this.isPolarFeeder = false;
-    this.currentTrayPosition = 0;
-    this.manualFeedId = null;
-    this.currentTemperature = 20.0; // Default temperature in Celsius
-    this.lastDataUpdate = Date.now(); // Initialize cache timestamp
-    this.cacheValidityMs = 5 * 60 * 1000; // 5 minutes cache
-    
-    // Authentication tokens
-    this.accessToken = null;
-    this.refreshToken = null;
-    this.tokenExpiry = null;
-    
-    // Set accessory information
-    this.accessory.getService(this.platform.api.hap.Service.AccessoryInformation)
-      .setCharacteristic(this.platform.api.hap.Characteristic.Manufacturer, 'PetLibro')
-      .setCharacteristic(this.platform.api.hap.Characteristic.Model, 'Smart Feeder')
-      .setCharacteristic(this.platform.api.hap.Characteristic.SerialNumber, this.deviceId || 'Unknown')
-      .setCharacteristic(this.platform.api.hap.Characteristic.FirmwareRevision, '1.0.0');
-    
-    // Services will be set up after device detection
-    this.switchService = null;
-    this.rotateTrayService = null;
-    this.audioService = null;
-    this.trayPositionSensor = null;
-    this.temperatureSensor = null;
-    
-    // Auto-authenticate on startup (with error handling)
-    this.authenticate().then(() => {
-      this.setupServices();
-    }).catch(error => {
-      this.log.error('Failed to authenticate during startup:', error.message);
-      this.log.error('Plugin will continue to retry authentication when used');
+    // Initialize cached API client
+    this.api = new CachedPetLibroAPI({
+      email: this.config.email,
+      password: this.config.password,
+      timezone: this.config.timezone
     });
+    
+    // Set logger for the API
+    this.api.setLogger(this.log);
+    
+    // Initialize device (with error handling)
+    this.initializeDevice().catch(error => {
+      this.log.error('Failed to initialize device during startup:', error.message);
+      this.log.error('Plugin will continue to retry initialization when used');
+    });
+  }
+  
+  async initializeDevice() {
+    try {
+      this.log('🔐 Authenticating with PetLibro API...');
+      const result = await this.api.authenticate();
+      
+      if (result.success) {
+        this.log('✅ Authentication successful!');
+        this.log('Token (first 20 chars):', result.token.substring(0, 20) + '...');
+        
+        // Get device list for model detection
+        await this.getDevices();
+        
+        // Set accessory information
+        this.accessory.getService(this.platform.api.hap.Service.AccessoryInformation)
+          .setCharacteristic(this.platform.api.hap.Characteristic.Manufacturer, 'PetLibro')
+          .setCharacteristic(this.platform.api.hap.Characteristic.Model, 'Smart Feeder')
+          .setCharacteristic(this.platform.api.hap.Characteristic.SerialNumber, this.deviceId || 'Unknown')
+          .setCharacteristic(this.platform.api.hap.Characteristic.FirmwareRevision, '1.0.0');
+        
+        // Services will be set up after device detection
+        this.switchService = null;
+        this.rotateTrayService = null;
+        this.audioService = null;
+        this.trayPositionSensor = null;
+        this.temperatureSensor = null;
+        
+        this.setupServices();
+      }
+    } catch (error) {
+      this.log.error('❌ Authentication failed:', error.message);
+      throw error;
+    }
   }
   
   setupServices() {
@@ -283,155 +291,35 @@ class PetLibroFeeder {
     this.log(`✅ Successfully moved to tray ${targetTray + 1} (slider snapped to ${newPercentage}%)`);
   }
   
-  // Hash password like the HomeAssistant plugin does
-  hashPassword(password) {
-    return crypto.createHash('md5').update(password).digest('hex');
-  }
+
   
   async authenticate() {
-    if (!this.email || !this.password) {
-      throw new Error('Email and password are required in config');
-    }
-
     try {
-      this.log('Authenticating with PetLibro API using HomeAssistant format...');
+      this.log('🔐 Authenticating with PetLibro API...');
+      const result = await this.api.authenticate();
       
-      // Use the exact constants from the HomeAssistant plugin
-      const payload = {
-        appId: 1, // APPID = 1 from the HomeAssistant code
-        appSn: 'c35772530d1041699c87fe62348507a8', // APPSN from the HomeAssistant code
-        country: this.config.country || 'US',
-        email: this.email,
-        password: this.hashPassword(this.password), // Hash the password like HomeAssistant does
-        phoneBrand: '',
-        phoneSystemVersion: '',
-        timezone: this.config.timezone || 'America/New_York',
-        thirdId: null,
-        type: null
-      };
-      
-      this.log('Using exact HomeAssistant format');
-      this.log('Endpoint:', `${this.baseUrl}/member/auth/login`);
-      this.log('Payload:', JSON.stringify({
-        ...payload,
-        password: payload.password.substring(0, 8) + '...' // Don't log full hashed password
-      }, null, 2));
-      
-      const response = await axios.post(`${this.baseUrl}/member/auth/login`, payload, {
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'PetLibro/1.3.45',
-          'Accept': 'application/json',
-          'Accept-Language': 'en-US',
-          'source': 'ANDROID',
-          'language': 'EN',
-          'timezone': payload.timezone,
-          'version': '1.3.45'
-        },
-        timeout: 10000
-      });
-      
-      this.log('Response status:', response.status);
-      this.log('Response data:', JSON.stringify(response.data, null, 2));
-      
-      // Check for success - HomeAssistant expects token in data.token
-      const data = response.data;
-      if (data && data.code === 0) {
-        this.log('🎉 Authentication successful with exact HomeAssistant format!');
+      if (result.success) {
+        this.log('✅ Authentication successful!');
+        this.log('Token (first 20 chars):', result.token.substring(0, 20) + '...');
         
-        // Look for token in data.token like HomeAssistant does
-        if (data.data && data.data.token) {
-          this.accessToken = data.data.token;
-          this.refreshToken = data.data.refresh_token || null;
-          
-          const expiresIn = data.data.expires_in || 3600;
-          this.tokenExpiry = Date.now() + (expiresIn * 1000);
-          
-          this.log('Authentication successful!');
-          this.log('Token (first 20 chars):', this.accessToken.substring(0, 20) + '...');
-          
-          // Always get device list for model detection
-          await this.getDevices();
-          return; // Success!
-        } else {
-          this.log('⚠️ Success response but no token found in data.token');
-          this.log('Full data object:', JSON.stringify(data, null, 2));
-          throw new Error('Authentication succeeded but no token found in data.token');
-        }
-      } else if (data && data.code) {
-        const errorMsg = data.msg || data.message || 'Unknown error';
-        this.log(`❌ Authentication failed: ${errorMsg} (code: ${data.code})`);
-        throw new Error(`Authentication failed: ${errorMsg} (code: ${data.code})`);
-      } else {
-        this.log(`❌ Unexpected response format`);
-        throw new Error('Unexpected response format');
+        // Get device list for model detection
+        await this.getDevices();
       }
-      
     } catch (error) {
-      this.log.error('Authentication failed:', error.message);
-      if (error.response) {
-        this.log.error('   Status:', error.response.status);
-        this.log.error('   Data:', JSON.stringify(error.response.data, null, 2));
-      }
+      this.log.error('❌ Authentication failed:', error.message);
       throw error;
     }
   }
   
-  async refreshAuthToken() {
-    if (!this.refreshToken) {
-      return this.authenticate();
-    }
-    
-    try {
-      const response = await axios.post(`${this.baseUrl}/member/auth/refresh`, {
-        refresh_token: this.refreshToken
-      }, {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.accessToken}`
-        }
-      });
-      
-      if (response.data && response.data.access_token) {
-        this.accessToken = response.data.access_token;
-        this.tokenExpiry = Date.now() + (response.data.expires_in * 1000);
-        this.log('Token refreshed successfully');
-      }
-    } catch (error) {
-      this.log.warn('Token refresh failed, re-authenticating...');
-      return this.authenticate();
-    }
-  }
+
   
   async getDevices() {
     try {
       this.log('🔍 Fetching device list from PetLibro API...');
-      await this.ensureAuthenticated();
+      const result = await this.api.getDevices();
       
-      // Use the correct endpoint from HomeAssistant integration
-      const endpoint = '/device/device/list';
-      
-      this.log(`🔄 Trying devices endpoint: ${this.baseUrl}${endpoint}`);
-      
-      const response = await axios.post(`${this.baseUrl}${endpoint}`, {}, {
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-          'Content-Type': 'application/json',
-          'token': this.accessToken, // HomeAssistant uses 'token' header
-          'source': 'ANDROID',
-          'language': 'EN',
-          'timezone': this.config.timezone || 'America/New_York',
-          'version': '1.3.45'
-        },
-        timeout: 10000
-      });
-      
-      this.log(`📊 Devices response status: ${response.status}`);
-      this.log(`📋 Devices response data:`, JSON.stringify(response.data, null, 2));
-      
-      // Check for successful response
-      if (response.data && response.data.code === 0 && response.data.data) {
-        const devices = response.data.data;
+      if (result.success) {
+        const devices = result.devices;
         
         if (Array.isArray(devices) && devices.length > 0) {
           // Find the target device
@@ -499,11 +387,7 @@ class PetLibroFeeder {
     }
   }
   
-  async ensureAuthenticated() {
-    if (!this.accessToken || Date.now() >= this.tokenExpiry) {
-      await this.refreshAuthToken();
-    }
-  }
+
   
   // Polar Feeder Methods
   async updateTrayPosition(forceUpdate = false) {
@@ -518,30 +402,11 @@ class PetLibroFeeder {
       
       this.log(`🔄 Fetching fresh temperature data (cache ${Math.round(cacheAge)}s old, forceUpdate: ${forceUpdate})`);
       
-      await this.ensureAuthenticated();
+      // Get real-time device info using the API layer
+      const result = await this.api.getDeviceRealInfo(this.deviceId);
       
-      // Get real-time device info to get current tray position
-      const response = await axios.post(`${this.baseUrl}/device/device/realInfo`, {
-        id: this.deviceId,
-        deviceSn: this.deviceId
-      }, {
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-          'Content-Type': 'application/json',
-          'token': this.accessToken,
-          'source': 'ANDROID',
-          'language': 'EN',
-          'timezone': this.config.timezone || 'America/New_York',
-          'version': '1.3.45'
-        },
-        timeout: 10000
-      });
-      
-      this.log(`📊 API Response status: ${response.status}`);
-      this.log(`📊 API Response data:`, JSON.stringify(response.data, null, 2));
-      
-      if (response.data && response.data.code === 0 && response.data.data) {
-        const realInfo = response.data.data;
+      if (result.success) {
+        const realInfo = result.data;
         this.log(`🔍 Raw device data:`, JSON.stringify(realInfo, null, 2));
         
         // Try different possible field names for plate position
@@ -552,24 +417,24 @@ class PetLibroFeeder {
         
         this.log(`🔍 Extracted values - platePosition: ${platePosition}, temperature: ${deviceTemperature}`);
         
-        // Update current tray position (ensure it's 1-based for display)
+        // Update current tray position
         this.currentTrayPosition = platePosition;
         
-        // Update current temperature (ensure it's in Celsius)
+        // Update current temperature
         this.currentTemperature = deviceTemperature;
         
         // Update cache timestamp
         this.lastDataUpdate = Date.now();
         
         this.log(`🌡️ Current temperature from device: ${deviceTemperature}°C`);
-        this.log(`🍽️ Current tray position from device: ${platePosition} (display: ${platePosition})`);
+        this.log(`🍽️ Current tray position from device: ${platePosition}`);
         
         // Update HomeKit services with new values
-        if (this.trayPositionSensor) {
-          const displayPosition = platePosition || 1; // Ensure at least 1
-          this.trayPositionSensor.getCharacteristic(this.platform.api.hap.Characteristic.CurrentTemperature)
-            .updateValue(displayPosition);
-          this.log(`📲 Pushing tray position update to HomeKit: ${displayPosition}`);
+        if (this.trayFanService) {
+          const percentage = this.trayPositionToPercentage(platePosition);
+          this.trayFanService.getCharacteristic(this.platform.api.hap.Characteristic.RotationSpeed)
+            .updateValue(percentage);
+          this.log(`📲 Pushing tray position update to HomeKit: ${platePosition} (${percentage}%)`);
         }
         
         if (this.temperatureSensor) {
@@ -579,13 +444,7 @@ class PetLibroFeeder {
         }
         
       } else {
-        this.log('⚠️ Failed to get device real info or invalid response format');
-        this.log('📊 Response structure:', {
-          hasData: !!response.data,
-          code: response.data?.code,
-          hasDataField: !!(response.data?.data),
-          dataKeys: response.data?.data ? Object.keys(response.data.data) : []
-        });
+        this.log('⚠️ Failed to get device real info');
       }
     } catch (error) {
       this.log.error('Failed to get current tray position:', error.message);
@@ -605,7 +464,6 @@ class PetLibroFeeder {
   async setPolarDoorState(value) {
     try {
       this.log(`🚪 ${value ? 'Opening' : 'Closing'} door for Polar feeder`);
-      await this.ensureAuthenticated();
       
       if (value) {
         // Open door - start manual feeding
@@ -635,31 +493,14 @@ class PetLibroFeeder {
     
     try {
       this.log('🔄 Rotating tray for Polar feeder');
-      await this.ensureAuthenticated();
       
       if (!this.deviceId) {
         throw new Error('Device ID not found - cannot rotate tray');
       }
       
-      const requestId = this.generateRequestId();
+      const result = await this.api.rotateTray(this.deviceId);
       
-      const response = await axios.post(`${this.baseUrl}/device/wetFeedingPlan/platePositionChange`, {
-        deviceSn: this.deviceId,
-        plate: 1  // The plate ID doesn't matter - device rotates one bowl counter-clockwise
-      }, {
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-          'Content-Type': 'application/json',
-          'token': this.accessToken,
-          'source': 'ANDROID',
-          'language': 'EN',
-          'timezone': this.config.timezone || 'America/New_York',
-          'version': '1.3.45'
-        },
-        timeout: 10000
-      });
-      
-      if (response.data && response.data.code === 0) {
+      if (result.success) {
         this.log('✅ Tray rotation successful');
         
         // Get the actual current tray position from the device after rotation
@@ -694,35 +535,16 @@ class PetLibroFeeder {
     }
     
     try {
-      this.log('🔊 Playing audio for Polar feeder');
-      await this.ensureAuthenticated();
+      this.log('🎧 Playing audio for Polar feeder');
       
       if (!this.deviceId) {
         throw new Error('Device ID not found - cannot play audio');
       }
       
-      const requestId = this.generateRequestId();
+      const result = await this.api.playAudio(this.deviceId);
       
-      const response = await axios.post(`${this.baseUrl}/device/wetFeedingPlan/feedAudio`, {
-        deviceSn: this.deviceId
-      }, {
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-          'Content-Type': 'application/json',
-          'token': this.accessToken,
-          'source': 'ANDROID',
-          'language': 'EN',
-          'timezone': this.config.timezone || 'America/New_York',
-          'version': '1.3.45'
-        },
-        timeout: 10000
-      });
-      
-      if (response.data && response.data.code === 0) {
+      if (result.success) {
         this.log('✅ Audio playback successful');
-      } else {
-        const errorMsg = response.data?.msg || 'Unknown error';
-        throw new Error(`Audio playback failed: ${errorMsg}`);
       }
       
     } catch (error) {
@@ -740,51 +562,27 @@ class PetLibroFeeder {
   
   async triggerPolarFeed(start) {
     try {
-      await this.ensureAuthenticated();
-      
       if (!this.deviceId) {
         throw new Error('Device ID not found - cannot control feeding');
       }
-      
-      const requestId = this.generateRequestId();
       
       if (start) {
         // Start manual feeding (open door)
         this.log('📡 Sending manual feed start command to Polar feeder');
         
-        const response = await axios.post(`${this.baseUrl}/device/wetFeedingPlan/manualFeedNow`, {
-          deviceSn: this.deviceId,
-          plate: 1  // The plate ID doesn't matter - device feeds from current bowl
-        }, {
-          headers: {
-            'Authorization': `Bearer ${this.accessToken}`,
-            'Content-Type': 'application/json',
-            'token': this.accessToken,
-            'source': 'ANDROID',
-            'language': 'EN',
-            'timezone': this.config.timezone || 'America/New_York',
-            'version': '1.3.45'
-          },
-          timeout: 10000
-        });
+        const result = await this.api.setManualFeed(this.deviceId, true);
         
-        this.log(`📊 Start feed response status: ${response.status}`);
-        this.log(`📊 Start feed response data:`, JSON.stringify(response.data, null, 2));
-        
-        if (response.data && response.data.code === 0) {
+        if (result.success) {
           this.log('✅ Manual feed started successfully');
-          // Store the manual feed ID for stopping later - try different possible field names
-          this.manualFeedId = response.data.data?.manualFeedId || response.data.data?.feedId || response.data.data?.id;
+          
+          // Store the manual feed ID for stopping later
+          this.manualFeedId = result.feedId;
           
           if (!this.manualFeedId) {
             this.log('⚠️ No feed ID returned from API, cannot stop feed later');
-            this.log('📊 Available data fields:', Object.keys(response.data.data || {}));
           } else {
             this.log(`📝 Stored manual feed ID: ${this.manualFeedId}`);
           }
-        } else {
-          const errorMsg = response.data?.msg || 'Unknown error';
-          throw new Error(`Manual feed start failed: ${errorMsg}`);
         }
         
       } else {
@@ -796,36 +594,11 @@ class PetLibroFeeder {
         
         this.log(`📡 Sending manual feed stop command to Polar feeder with feedId: ${this.manualFeedId}`);
         
-        const stopPayload = {
-          deviceSn: this.deviceId,
-          feedId: this.manualFeedId
-        };
-        this.log(`📝 Stop feed payload:`, JSON.stringify(stopPayload, null, 2));
+        const result = await this.api.stopManualFeed(this.deviceId, this.manualFeedId);
         
-        const response = await axios.post(`${this.baseUrl}/device/wetFeedingPlan/stopFeedNow`, stopPayload, {
-          headers: {
-            'Authorization': `Bearer ${this.accessToken}`,
-            'Content-Type': 'application/json',
-            'token': this.accessToken,
-            'source': 'ANDROID',
-            'language': 'EN',
-            'timezone': this.config.timezone || 'America/New_York',
-            'version': '1.3.45'
-          },
-          timeout: 10000
-        });
-        
-        this.log(`📊 Stop feed response status: ${response.status}`);
-        this.log(`📊 Stop feed response data:`, JSON.stringify(response.data, null, 2));
-        
-        if (response.data && response.data.code === 0) {
+        if (result.success) {
           this.log('✅ Manual feed stopped successfully');
           this.manualFeedId = null;
-        } else {
-          const errorMsg = response.data?.msg || 'Unknown error';
-          const errorCode = response.data?.code || 'Unknown code';
-          this.log(`❌ Stop feed failed - Code: ${errorCode}, Message: ${errorMsg}`);
-          throw new Error(`Manual feed stop failed: ${errorMsg}`);
         }
       }
       
@@ -878,72 +651,32 @@ class PetLibroFeeder {
   
   async triggerFeeding() {
     try {
-      this.log('🔐 Ensuring authentication before feeding...');
-      await this.ensureAuthenticated();
-      
       if (!this.deviceId) {
         throw new Error('Device ID not found - cannot send feed command');
       }
       
       this.log(`📡 Sending manual feed command to device: ${this.deviceId}`);
-      this.log(`🥘 Portions to dispense: ${this.config.portions || 1}`);
+      this.log(`🍘 Portions to dispense: ${this.config.portions || 1}`);
       
-      // Use the exact endpoint and format from HomeAssistant
-      const feedData = {
-        deviceSn: this.deviceId,
-        grainNum: parseInt(this.config.portions || 1), // Ensure it's an integer
-        requestId: this.generateRequestId() // Generate unique request ID like HomeAssistant
-      };
+      const result = await this.api.manualFeed(this.deviceId, parseInt(this.config.portions || 1));
       
-      this.log('📤 Feed request payload:', JSON.stringify(feedData, null, 2));
-      this.log(`🔄 Using HomeAssistant endpoint: ${this.baseUrl}/device/device/manualFeeding`);
-      
-      const response = await axios.post(`${this.baseUrl}/device/device/manualFeeding`, feedData, {
-        headers: {
-          'Authorization': `Bearer ${this.accessToken}`,
-          'Content-Type': 'application/json',
-          'token': this.accessToken, // HomeAssistant uses 'token' header
-          'source': 'ANDROID',
-          'language': 'EN',
-          'timezone': this.config.timezone || 'America/New_York',
-          'version': '1.3.45'
-        },
-        timeout: 15000 // 15 second timeout for feed commands
-      });
-      
-      this.log(`📊 Feed response status: ${response.status}`);
-      this.log(`📋 Feed response data:`, JSON.stringify(response.data, null, 2));
-      
-      // Check for success based on HomeAssistant code
-      if (response.status === 200) {
-        // HomeAssistant expects the response to be an integer or success code
-        if (typeof response.data === 'number' || 
-            (response.data && response.data.code === 0) ||
-            response.data === 0) {
-          
-          this.log('✅ Manual feeding triggered successfully!');
-          return;
-        } else {
-          this.log(`⚠️ Feed command sent but unexpected response:`, JSON.stringify(response.data, null, 2));
-        }
+      if (result.success) {
+        this.log('✅ Manual feeding triggered successfully!');
+        return;
       }
       
-      throw new Error(`Feed command failed with status ${response.status}`);
+      throw new Error('Feed command failed');
       
     } catch (error) {
       this.log.error('💥 Failed to trigger feeding:', error.message);
       if (error.response) {
-        this.log.error('   Response status:', error.response.status);
         this.log.error('   Response data:', JSON.stringify(error.response.data, null, 2));
       }
       throw error;
     }
   }
   
-  // Generate unique request ID like HomeAssistant does
-  generateRequestId() {
-    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-  }
+
   
   getServices() {
     const services = [];
